@@ -1,232 +1,263 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 
-const initialForm = {
-  name: '',
-  age: '',
-  address: '',
-  city: '',
-  state: '',
-  zipCode: '',
-  hometown: '',
-  phoneNumber: '',
-  email: '',
-  notes: '',
-};
-
 function App() {
-  const [form, setForm] = useState(initialForm);
-  const [status, setStatus] = useState({ type: 'idle', message: '' });
-  const [savedList, setSavedList] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [model, setModel] = useState('gemini-3-flash-preview');
+  const [modelOptions, setModelOptions] = useState([
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
+  ]);
+  const [health, setHealth] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const listEndRef = useRef(null);
+  const messagesRef = useRef(messages);
 
-  const update = (field) => (e) => {
-    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    listEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
   };
 
-  const handleSubmit = async (e) => {
+  const refreshMeta = useCallback(async () => {
+    try {
+      const [h, s, m] = await Promise.all([
+        fetch('/api/health').then((r) => r.json()),
+        fetch('/api/stats').then((r) => r.json()),
+        fetch('/api/models').then((r) => r.json()),
+      ]);
+      setHealth(h);
+      setStats(s);
+      if (Array.isArray(m.models) && m.models.length) {
+        setModelOptions(m.models);
+        if (m.defaultModel) {
+          setModel((cur) => (m.models.includes(cur) ? cur : m.defaultModel));
+        }
+      }
+    } catch {
+      setHealth({ ok: false, mode: 'unknown' });
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshMeta();
+  }, [refreshMeta]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, loading]);
+
+  const send = async (e) => {
     e.preventDefault();
-    setStatus({ type: 'loading', message: 'Saving…' });
+    const text = input.trim();
+    if (!text || loading) return;
+
+    setError('');
+    const previous = messagesRef.current;
+    const nextMessages = [...previous, { role: 'user', content: text }];
+    setMessages(nextMessages);
+    setInput('');
+    setLoading(true);
 
     try {
-      const res = await fetch('/api/submissions', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: form.name,
-          age: form.age,
-          address: form.address,
-          city: form.city,
-          state: form.state,
-          zipCode: form.zipCode,
-          hometown: form.hometown,
-          phoneNumber: form.phoneNumber,
-          email: form.email,
-          notes: form.notes,
-        }),
+        body: JSON.stringify({ messages: nextMessages, model }),
       });
-
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const msg =
-          Array.isArray(data.errors) && data.errors.length
-            ? data.errors.join('. ')
-            : data.error || 'Could not save. Try again.';
-        setStatus({ type: 'error', message: msg });
+        setError(data.error || 'Request failed');
+        setMessages(previous);
         return;
       }
 
-      setStatus({ type: 'success', message: 'Saved successfully.' });
-      setForm(initialForm);
-      setSavedList((prev) => [data, ...prev]);
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: data.content, meta: data },
+      ]);
+      refreshMeta();
     } catch {
-      setStatus({
-        type: 'error',
-        message:
-          'Network error. Start the API (npm run server) and ensure the dev proxy is set.',
-      });
+      setError('Network error — is the API running? Try `npm run server`.');
+      setMessages(previous);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const clearChat = () => {
+    setMessages([]);
+    setError('');
+  };
+
+  const mode = health?.mode || '…';
+  const modeClass = mode === 'live' ? 'pill pill--live' : 'pill pill--demo';
+  const liveLabel =
+    mode === 'live'
+      ? health?.provider === 'gemini'
+        ? 'Gemini live'
+        : health?.provider === 'openai'
+          ? 'OpenAI live'
+          : 'Live'
+      : 'Demo mode';
+
   return (
-    <div className="app">
-      <main className="card">
-        <h1 className="title">Contact profile</h1>
-        <p className="subtitle">
-          Enter your details below. They are sent to the backend and stored in a JSON file.
-        </p>
+    <div className="dash">
+      <header className="dash__header">
+        <div>
+          <h1 className="dash__title">AI dashboard</h1>
+          <p className="dash__tagline">Chat with the backend; stats update after each reply.</p>
+        </div>
+        <div className="dash__header-actions">
+          <span className={modeClass} title="Configured on the server">
+            {liveLabel}
+          </span>
+          <button type="button" className="btn btn--ghost" onClick={refreshMeta}>
+            Refresh stats
+          </button>
+        </div>
+      </header>
 
-        <form className="form" onSubmit={handleSubmit}>
-          <label className="field">
-            <span>Full name *</span>
-            <input
-              type="text"
-              name="name"
-              value={form.name}
-              onChange={update('name')}
-              autoComplete="name"
-              required
-            />
-          </label>
-
-          <label className="field">
-            <span>Age *</span>
-            <input
-              type="number"
-              name="age"
-              min="0"
-              max="150"
-              value={form.age}
-              onChange={update('age')}
-              required
-            />
-          </label>
-
-          <label className="field field--full">
-            <span>Street address *</span>
-            <input
-              type="text"
-              name="address"
-              value={form.address}
-              onChange={update('address')}
-              autoComplete="street-address"
-              required
-            />
-          </label>
-
-          <div className="row">
-            <label className="field">
-              <span>City *</span>
-              <input
-                type="text"
-                name="city"
-                value={form.city}
-                onChange={update('city')}
-                autoComplete="address-level2"
-                required
-              />
-            </label>
-            <label className="field">
-              <span>State / region</span>
-              <input
-                type="text"
-                name="state"
-                value={form.state}
-                onChange={update('state')}
-                autoComplete="address-level1"
-              />
-            </label>
-            <label className="field">
-              <span>ZIP / postal code</span>
-              <input
-                type="text"
-                name="zipCode"
-                value={form.zipCode}
-                onChange={update('zipCode')}
-                autoComplete="postal-code"
-              />
+      <div className="dash__grid">
+        <section className="panel panel--chat" aria-label="Chat">
+          <div className="panel__head">
+            <h2 className="panel__title">Assistant</h2>
+            <label className="model-select">
+              <span className="sr-only">Model</span>
+              <select value={model} onChange={(e) => setModel(e.target.value)} disabled={loading}>
+                {modelOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
 
-          <label className="field">
-            <span>Hometown *</span>
-            <input
-              type="text"
-              name="hometown"
-              value={form.hometown}
-              onChange={update('hometown')}
-              required
-            />
-          </label>
+          <div className="thread" role="log" aria-live="polite">
+            {messages.length === 0 && !loading ? (
+              <p className="thread__empty">Ask anything. The assistant replies through your Express API.</p>
+            ) : null}
+            {messages.map((m, i) => (
+              <div
+                key={`${i}-${m.role}`}
+                className={`bubble bubble--${m.role}`}
+              >
+                <span className="bubble__label">{m.role === 'user' ? 'You' : 'Assistant'}</span>
+                <div className="bubble__body">{m.content}</div>
+              </div>
+            ))}
+            {loading ? (
+              <div className="bubble bubble--assistant bubble--typing">
+                <span className="bubble__label">Assistant</span>
+                <div className="typing" aria-hidden>
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            ) : null}
+            <div ref={listEndRef} />
+          </div>
 
-          <label className="field">
-            <span>Phone number *</span>
-            <input
-              type="tel"
-              name="phoneNumber"
-              value={form.phoneNumber}
-              onChange={update('phoneNumber')}
-              autoComplete="tel"
-              required
-            />
-          </label>
+          {error ? (
+            <p className="banner banner--error" role="alert">
+              {error}
+            </p>
+          ) : null}
 
-          <label className="field">
-            <span>Email</span>
-            <input
-              type="email"
-              name="email"
-              value={form.email}
-              onChange={update('email')}
-              autoComplete="email"
-            />
-          </label>
-
-          <label className="field field--full">
-            <span>Notes</span>
+          <form className="composer" onSubmit={send}>
             <textarea
-              name="notes"
-              rows={3}
-              value={form.notes}
-              onChange={update('notes')}
+              className="composer__input"
+              rows={2}
+              placeholder="Message…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  send(e);
+                }
+              }}
+              disabled={loading}
             />
-          </label>
+            <div className="composer__actions">
+              <button type="button" className="btn btn--ghost" onClick={clearChat} disabled={loading}>
+                Clear
+              </button>
+              <button type="submit" className="btn btn--primary" disabled={loading || !input.trim()}>
+                Send
+              </button>
+            </div>
+          </form>
+        </section>
 
-          <div className="actions">
-            <button type="submit" className="btn primary" disabled={status.type === 'loading'}>
-              {status.type === 'loading' ? 'Saving…' : 'Save profile'}
-            </button>
-          </div>
-        </form>
-
-        {status.message ? (
-          <p
-            className={`feedback ${status.type === 'error' ? 'feedback--error' : ''} ${
-              status.type === 'success' ? 'feedback--ok' : ''
-            }`}
-            role="status"
-          >
-            {status.message}
-          </p>
-        ) : null}
-
-        {savedList.length > 0 ? (
-          <section className="recent" aria-label="Recently saved in this session">
-            <h2 className="recent-title">Saved this session</h2>
-            <ul className="recent-list">
-              {savedList.map((s) => (
-                <li key={s.id} className="recent-item">
-                  <strong>{s.name}</strong>
-                  <span className="muted">
-                    {' '}
-                    · {s.city}, age {s.age}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-      </main>
+        <aside className="panel panel--metrics" aria-label="Usage metrics">
+          <h2 className="panel__title">Session metrics</h2>
+          <ul className="metrics">
+            <li>
+              <span className="metrics__k">Uptime</span>
+              <span className="metrics__v">
+                {stats != null ? `${stats.uptimeSeconds}s` : '—'}
+              </span>
+            </li>
+            <li>
+              <span className="metrics__k">Provider</span>
+              <span className="metrics__v">
+                {stats == null
+                  ? '—'
+                  : stats.provider === 'gemini'
+                    ? 'Gemini'
+                    : stats.provider === 'openai'
+                      ? 'OpenAI'
+                      : 'Demo'}
+              </span>
+            </li>
+            <li>
+              <span className="metrics__k">Total chats</span>
+              <span className="metrics__v">{stats?.totalChats ?? '—'}</span>
+            </li>
+            <li>
+              <span className="metrics__k">Live / demo</span>
+              <span className="metrics__v">
+                {stats != null ? `${stats.liveChats} / ${stats.demoChats}` : '—'}
+              </span>
+            </li>
+            <li>
+              <span className="metrics__k">Avg latency</span>
+              <span className="metrics__v">
+                {stats?.totalChats ? `${stats.avgLatencyMs} ms` : '—'}
+              </span>
+            </li>
+            <li>
+              <span className="metrics__k">Last latency</span>
+              <span className="metrics__v">
+                {stats?.lastLatencyMs != null && stats.lastLatencyMs > 0
+                  ? `${stats.lastLatencyMs} ms`
+                  : '—'}
+              </span>
+            </li>
+            <li>
+              <span className="metrics__k">Tokens (prompt / out)</span>
+              <span className="metrics__v">
+                {stats != null ? `${stats.promptTokens} / ${stats.completionTokens}` : '—'}
+              </span>
+            </li>
+            <li>
+              <span className="metrics__k">Failed requests</span>
+              <span className="metrics__v">{stats?.failedRequests ?? '—'}</span>
+            </li>
+          </ul>
+        </aside>
+      </div>
     </div>
   );
 }
